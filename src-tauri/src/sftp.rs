@@ -2,8 +2,12 @@ use crate::ssh_config::{parse_ssh_config, SshHost};
 use serde::Serialize;
 use ssh2::Session;
 use std::io::{Read, Write};
-use std::net::TcpStream;
+use std::net::{TcpStream, ToSocketAddrs};
 use std::path::Path;
+use std::time::Duration;
+
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
+const SESSION_TIMEOUT_MS: u32 = 10_000;
 
 #[derive(Serialize, Clone, Debug)]
 pub struct RemoteEntry {
@@ -23,6 +27,13 @@ fn resolve_host(alias: &str) -> Result<SshHost, String> {
 
 fn connect(alias: &str) -> Result<Session, String> {
     let host = resolve_host(alias)?;
+
+    if let Some(proxy_cmd) = &host.proxy_command {
+        return Err(format!(
+            "'{alias}' uses a ProxyCommand ({proxy_cmd}) in ~/.ssh/config. File browsing/download doesn't support proxied hosts yet — use the Sync or Port Forward tabs instead, which shell out to your system ssh and honor it."
+        ));
+    }
+
     let hostname = host.host_name.unwrap_or_else(|| alias.to_string());
     let port: u16 = host.port.and_then(|p| p.parse().ok()).unwrap_or(22);
     let user = host
@@ -30,11 +41,18 @@ fn connect(alias: &str) -> Result<Session, String> {
         .or_else(|| std::env::var("USER").ok())
         .ok_or("Could not determine SSH user")?;
 
-    let tcp = TcpStream::connect((hostname.as_str(), port))
-        .map_err(|e| format!("TCP connect to {hostname}:{port} failed: {e}"))?;
+    let addr = (hostname.as_str(), port)
+        .to_socket_addrs()
+        .map_err(|e| format!("Failed to resolve {hostname}:{port}: {e}"))?
+        .next()
+        .ok_or_else(|| format!("No addresses found for {hostname}:{port}"))?;
+    let tcp = TcpStream::connect_timeout(&addr, CONNECT_TIMEOUT)
+        .map_err(|e| format!("TCP connect to {hostname}:{port} failed or timed out: {e}"))?;
+
     let mut sess = Session::new().map_err(|e| e.to_string())?;
+    sess.set_timeout(SESSION_TIMEOUT_MS);
     sess.set_tcp_stream(tcp);
-    sess.handshake().map_err(|e| format!("SSH handshake failed: {e}"))?;
+    sess.handshake().map_err(|e| format!("SSH handshake failed or timed out: {e}"))?;
 
     // Try ssh-agent first (matches ForwardAgent-based workflows), then identity file.
     let mut authed = false;
