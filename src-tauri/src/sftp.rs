@@ -60,9 +60,43 @@ fn connect(alias: &str) -> Result<Session, String> {
         authed = sess.authenticated();
     }
     if !authed {
-        return Err("SSH authentication failed (no working agent identity or key)".into());
+        return Err(
+            "PERMISSION_DENIED: SSH authentication failed. No working ssh-agent identity or key was accepted for this host.".into(),
+        );
     }
     Ok(sess)
+}
+
+#[derive(Serialize, Clone, Debug)]
+pub struct AgentStatus {
+    pub agent_running: bool,
+    pub identity_count: usize,
+}
+
+/// Lets the frontend proactively check whether ssh-agent has any keys loaded,
+/// so it can prompt the user to grant access (via `ssh-add`) before a real
+/// connection attempt fails with a permission error.
+#[tauri::command]
+pub fn check_ssh_agent() -> AgentStatus {
+    let sess = match Session::new() {
+        Ok(s) => s,
+        Err(_) => return AgentStatus { agent_running: false, identity_count: 0 },
+    };
+    match sess.agent() {
+        Ok(mut agent) => {
+            if agent.connect().is_err() {
+                return AgentStatus { agent_running: false, identity_count: 0 };
+            }
+            let count = agent
+                .list_identities()
+                .ok()
+                .and_then(|_| agent.identities().ok())
+                .map(|ids| ids.len())
+                .unwrap_or(0);
+            AgentStatus { agent_running: true, identity_count: count }
+        }
+        Err(_) => AgentStatus { agent_running: false, identity_count: 0 },
+    }
 }
 
 #[tauri::command]

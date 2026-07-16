@@ -19,10 +19,13 @@ pub fn run() {
         .manage(ForwardState::default())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_process::init())
         .invoke_handler(tauri::generate_handler![
             list_ssh_hosts,
+            ssh_config::add_ssh_host,
             sftp::list_dir,
             sftp::download_file,
+            sftp::check_ssh_agent,
             sync::sync_folder,
             forward::start_forward,
             forward::stop_forward,

@@ -1,8 +1,14 @@
-# ssher
+<p align="center">
+  <img src="assets/logo.svg" width="96" height="96" alt="ssher logo" />
+</p>
 
-A minimal, modern SSH companion app for macOS. Lives quietly in the menu bar
-(no Dock icon) and gives you quick access to remote file browsing, folder
-sync, and port forwarding for hosts already in your `~/.ssh/config`.
+<h1 align="center">ssher</h1>
+
+<p align="center">
+  A minimal, modern SSH companion app for macOS — file browsing, folder sync,
+  and port forwarding for the hosts already in your <code>~/.ssh/config</code>,
+  living quietly in your menu bar.
+</p>
 
 ## Features
 
@@ -11,7 +17,9 @@ sync, and port forwarding for hosts already in your `~/.ssh/config`.
 - **Folder sync** — two-way rsync-over-ssh between a local folder and a remote path
 - **Port forwarding** — start/stop local (`-L`) and remote (`-R`) forwards
 - **SSH config aliases** — reads `~/.ssh/config` `Host` entries automatically, uses your ssh-agent or identity file for auth
-- **Background app** — runs from the menu bar tray; closing the window hides it instead of quitting; open the full window anytime from the tray menu
+- **Add New SSH Host** — add a new alias (VS Code Remote-SSH style) straight from the sidebar; it's appended to `~/.ssh/config`
+- **Permission guidance** — if the SSH agent has no usable key for a host, ssher tells you exactly what to run and lets you retry
+- **Background app** — runs from the menu bar tray, no Dock icon; closing the window hides it instead of quitting; open the full window or quit from the in-app menu or tray
 
 ## Stack
 
@@ -41,3 +49,9 @@ Produces a `.app` bundle and `.dmg` under `src-tauri/target/release/bundle/`.
 - Port forwarding and sync shell out to your system's `ssh`/`rsync` binaries,
   so any `ProxyCommand`/`ProxyJump`/agent-forwarding setup in your SSH config
   is respected automatically.
+- If ssher reports a permission/auth error, it will show the exact `ssh-add`
+  command to run to grant it access via your agent.
+
+## License
+
+MIT

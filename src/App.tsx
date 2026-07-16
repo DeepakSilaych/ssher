@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { exit } from "@tauri-apps/plugin-process";
 import "./App.css";
 
 type SshHost = {
@@ -29,6 +31,11 @@ type ForwardInfo = {
   remote_port: number;
 };
 
+type AgentStatus = {
+  agent_running: boolean;
+  identity_count: number;
+};
+
 type Tab = "files" | "sync" | "forward";
 
 function formatSize(bytes: number): string {
@@ -43,11 +50,28 @@ function formatSize(bytes: number): string {
   return `${val.toFixed(1)} ${units[i]}`;
 }
 
+function isPermissionError(msg: string): boolean {
+  return msg.includes("PERMISSION_DENIED");
+}
+
 function App() {
   const [hosts, setHosts] = useState<SshHost[]>([]);
   const [selectedAlias, setSelectedAlias] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("files");
   const [error, setError] = useState<string | null>(null);
+  const [navMenuOpen, setNavMenuOpen] = useState(false);
+
+  const [showAddHost, setShowAddHost] = useState(false);
+  const [newAlias, setNewAlias] = useState("");
+  const [newHostName, setNewHostName] = useState("");
+  const [newUser, setNewUser] = useState("");
+  const [newPort, setNewPort] = useState("");
+  const [newIdentityFile, setNewIdentityFile] = useState("");
+  const [addHostError, setAddHostError] = useState<string | null>(null);
+  const [addingHost, setAddingHost] = useState(false);
+
+  const [agentStatus, setAgentStatus] = useState<AgentStatus | null>(null);
+  const [permissionModalOpen, setPermissionModalOpen] = useState(false);
 
   const [remotePath, setRemotePath] = useState("~");
   const [entries, setEntries] = useState<RemoteEntry[]>([]);
@@ -66,13 +90,19 @@ function App() {
   const [fwRemotePort, setFwRemotePort] = useState("8080");
   const [fwDirection, setFwDirection] = useState<"local" | "remote">("local");
 
-  useEffect(() => {
-    invoke<SshHost[]>("list_ssh_hosts")
+  function refreshHosts() {
+    return invoke<SshHost[]>("list_ssh_hosts")
       .then((h) => {
         setHosts(h);
-        if (h.length) setSelectedAlias((prev) => prev ?? h[0].alias);
+        setSelectedAlias((prev) => prev ?? (h.length ? h[0].alias : null));
+        return h;
       })
       .catch((e) => setError(String(e)));
+  }
+
+  useEffect(() => {
+    refreshHosts();
+    invoke<AgentStatus>("check_ssh_agent").then(setAgentStatus).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -93,6 +123,15 @@ function App() {
     invoke<ForwardInfo[]>("list_forwards").then(setForwards).catch(() => {});
   }
 
+  function handleFailure(e: unknown) {
+    const msg = String(e);
+    if (isPermissionError(msg)) {
+      setPermissionModalOpen(true);
+    } else {
+      setError(msg);
+    }
+  }
+
   async function loadDir(alias: string, path: string) {
     setLoadingDir(true);
     setError(null);
@@ -101,7 +140,7 @@ function App() {
       setEntries(res);
       setRemotePath(path);
     } catch (e) {
-      setError(String(e));
+      handleFailure(e);
     } finally {
       setLoadingDir(false);
     }
@@ -125,7 +164,7 @@ function App() {
         localPath: dest,
       });
     } catch (e) {
-      setError(String(e));
+      handleFailure(e);
     }
   }
 
@@ -148,7 +187,7 @@ function App() {
         delete: deleteExtra,
       });
     } catch (e) {
-      setError(String(e));
+      handleFailure(e);
       setSyncing(false);
     }
   }
@@ -166,7 +205,7 @@ function App() {
       });
       refreshForwards();
     } catch (e) {
-      setError(String(e));
+      handleFailure(e);
     }
   }
 
@@ -175,10 +214,78 @@ function App() {
     refreshForwards();
   }
 
+  async function submitAddHost() {
+    setAddHostError(null);
+    if (!newAlias.trim() || !newHostName.trim()) {
+      setAddHostError("Alias and Host are required");
+      return;
+    }
+    setAddingHost(true);
+    try {
+      await invoke("add_ssh_host", {
+        host: {
+          alias: newAlias.trim(),
+          host_name: newHostName.trim(),
+          user: newUser.trim() || undefined,
+          port: newPort.trim() || undefined,
+          identity_file: newIdentityFile.trim() || undefined,
+        },
+      });
+      setShowAddHost(false);
+      setNewAlias("");
+      setNewHostName("");
+      setNewUser("");
+      setNewPort("");
+      setNewIdentityFile("");
+      const h = await refreshHosts();
+      if (h) setSelectedAlias(newAlias.trim());
+    } catch (e) {
+      setAddHostError(String(e));
+    } finally {
+      setAddingHost(false);
+    }
+  }
+
+  async function handleOpen() {
+    const win = getCurrentWindow();
+    await win.show();
+    await win.setFocus();
+    setNavMenuOpen(false);
+  }
+
+  async function handleQuit() {
+    setNavMenuOpen(false);
+    await exit(0);
+  }
+
+  const selectedHost = hosts.find((h) => h.alias === selectedAlias);
+
   return (
     <div className="app">
       <aside className="sidebar">
-        <div className="sidebar-title">ssher</div>
+        <div className="sidebar-title">
+          <span>ssher</span>
+          <div className="nav-menu-wrap">
+            <button className="nav-menu-btn" onClick={() => setNavMenuOpen((v) => !v)} aria-label="Menu">
+              ⋯
+            </button>
+            {navMenuOpen && (
+              <div className="nav-menu-dropdown" onMouseLeave={() => setNavMenuOpen(false)}>
+                <button onClick={handleOpen}>Open</button>
+                <button onClick={handleQuit} className="danger-item">
+                  Quit
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {agentStatus && !agentStatus.agent_running && (
+          <button className="agent-warning" onClick={() => setPermissionModalOpen(true)}>
+            ⚠ No SSH agent detected
+          </button>
+        )}
+
         <div className="host-list">
           {hosts.map((h) => (
             <button
@@ -195,6 +302,10 @@ function App() {
           ))}
           {hosts.length === 0 && <div className="empty-hint">No hosts found in ~/.ssh/config</div>}
         </div>
+
+        <button className="add-host-btn" onClick={() => setShowAddHost(true)}>
+          + Add New SSH Host
+        </button>
       </aside>
 
       <main className="main">
@@ -208,7 +319,7 @@ function App() {
 
         {error && <div className="error-banner">{error}</div>}
 
-        {!selectedAlias && <div className="empty-hint">Select a host to get started</div>}
+        {!selectedAlias && <div className="empty-hint">Select a host to get started, or add a new one</div>}
 
         {selectedAlias && tab === "files" && (
           <section className="panel">
@@ -329,6 +440,82 @@ function App() {
           </section>
         )}
       </main>
+
+      {showAddHost && (
+        <div className="modal-overlay" onClick={() => setShowAddHost(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h3>Add New SSH Host</h3>
+            <p className="modal-hint">Saved as a new Host entry in your ~/.ssh/config.</p>
+            <div className="form-row">
+              <label>Alias (name)</label>
+              <input value={newAlias} onChange={(e) => setNewAlias(e.target.value)} placeholder="my-vm" autoFocus />
+            </div>
+            <div className="form-row">
+              <label>Host / IP address</label>
+              <input
+                value={newHostName}
+                onChange={(e) => setNewHostName(e.target.value)}
+                placeholder="203.0.113.10 or vm.example.com"
+              />
+            </div>
+            <div className="form-row triple">
+              <div>
+                <label>User</label>
+                <input value={newUser} onChange={(e) => setNewUser(e.target.value)} placeholder="ubuntu" />
+              </div>
+              <div>
+                <label>Port</label>
+                <input value={newPort} onChange={(e) => setNewPort(e.target.value)} placeholder="22" />
+              </div>
+            </div>
+            <div className="form-row">
+              <label>Identity file (optional)</label>
+              <input
+                value={newIdentityFile}
+                onChange={(e) => setNewIdentityFile(e.target.value)}
+                placeholder="~/.ssh/id_ed25519"
+              />
+            </div>
+            {addHostError && <div className="error-banner">{addHostError}</div>}
+            <div className="modal-actions">
+              <button onClick={() => setShowAddHost(false)}>Cancel</button>
+              <button className="primary" disabled={addingHost} onClick={submitAddHost}>
+                {addingHost ? "Adding…" : "Add Host"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {permissionModalOpen && (
+        <div className="modal-overlay" onClick={() => setPermissionModalOpen(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h3>SSH access needed</h3>
+            <p>
+              ssher couldn't authenticate{selectedHost ? ` to "${selectedHost.alias}"` : ""}. Your SSH agent has no
+              usable key loaded for this host. Grant access by loading your key into the agent, then retry.
+            </p>
+            <pre className="code-block">ssh-add {selectedHost?.identity_file || "~/.ssh/id_ed25519"}</pre>
+            <p className="modal-hint">Run this in Terminal (it may prompt for your key's passphrase), then retry below.</p>
+            <div className="modal-actions">
+              <button onClick={() => setPermissionModalOpen(false)}>Dismiss</button>
+              <button
+                className="primary"
+                onClick={async () => {
+                  const status = await invoke<AgentStatus>("check_ssh_agent");
+                  setAgentStatus(status);
+                  if (status.agent_running && status.identity_count > 0) {
+                    setPermissionModalOpen(false);
+                    if (selectedAlias && tab === "files") loadDir(selectedAlias, remotePath);
+                  }
+                }}
+              >
+                I've done this, Retry
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

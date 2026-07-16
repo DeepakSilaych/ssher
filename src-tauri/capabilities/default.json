@@ -7,7 +7,9 @@
     "core:default",
     "core:window:allow-show",
     "core:window:allow-hide",
+    "core:window:allow-set-focus",
     "opener:default",
-    "dialog:default"
+    "dialog:default",
+    "process:allow-exit"
   ]
 }

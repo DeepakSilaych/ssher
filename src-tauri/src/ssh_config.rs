@@ -1,6 +1,7 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
+use std::io::Write;
 
 #[derive(Serialize, Clone, Debug, Default)]
 pub struct SshHost {
@@ -63,4 +64,50 @@ pub fn parse_ssh_config() -> Vec<SshHost> {
     flush(&current_aliases, &current_fields, &mut hosts);
 
     hosts
+}
+
+#[derive(Deserialize, Debug)]
+pub struct NewSshHost {
+    pub alias: String,
+    pub host_name: String,
+    pub user: Option<String>,
+    pub port: Option<String>,
+    pub identity_file: Option<String>,
+}
+
+#[tauri::command]
+pub fn add_ssh_host(host: NewSshHost) -> Result<(), String> {
+    let ssh_dir = dirs::home_dir()
+        .map(|h| h.join(".ssh"))
+        .ok_or("Could not determine home directory")?;
+    fs::create_dir_all(&ssh_dir).map_err(|e| format!("Failed to create ~/.ssh: {e}"))?;
+    let path = ssh_dir.join("config");
+
+    let alias = host.alias.trim();
+    if alias.is_empty() {
+        return Err("Alias cannot be empty".into());
+    }
+    if parse_ssh_config().iter().any(|h| h.alias == alias) {
+        return Err(format!("Host alias '{alias}' already exists in ~/.ssh/config"));
+    }
+
+    let mut block = format!("\nHost {alias}\n  HostName {}\n", host.host_name.trim());
+    if let Some(u) = host.user.filter(|s| !s.trim().is_empty()) {
+        block.push_str(&format!("  User {}\n", u.trim()));
+    }
+    if let Some(p) = host.port.filter(|s| !s.trim().is_empty()) {
+        block.push_str(&format!("  Port {}\n", p.trim()));
+    }
+    if let Some(i) = host.identity_file.filter(|s| !s.trim().is_empty()) {
+        block.push_str(&format!("  IdentityFile {}\n", i.trim()));
+    }
+
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map_err(|e| format!("Failed to open {}: {e}", path.display()))?;
+    file.write_all(block.as_bytes())
+        .map_err(|e| format!("Failed to write to {}: {e}", path.display()))?;
+    Ok(())
 }
