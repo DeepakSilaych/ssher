@@ -10,6 +10,26 @@
   living quietly in your menu bar.
 </p>
 
+<p align="center">
+  <a href="https://github.com/DeepakSilaych/ssher/releases/latest">
+    <img alt="Download for macOS (Apple Silicon)" src="https://img.shields.io/badge/Download-macOS%20(Apple%20Silicon)-3b82f6?style=for-the-badge&logo=apple">
+  </a>
+</p>
+
+## Install
+
+Grab the latest `.dmg` from [Releases](https://github.com/DeepakSilaych/ssher/releases/latest), open it, and drag **ssher** into Applications.
+
+The build is unsigned (no Apple Developer certificate yet), so macOS Gatekeeper will block the first launch. To open it:
+
+```bash
+xattr -cr /Applications/ssher.app
+```
+
+or right-click the app in Finder → **Open** → **Open** again on the warning dialog.
+
+Requires Apple Silicon (M-series) macOS. Intel isn't built yet — see [Build](#build) to compile locally.
+
 ## Features
 
 - **File system view** — browse remote directories over SFTP
