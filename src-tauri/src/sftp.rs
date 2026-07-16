@@ -117,11 +117,27 @@ pub fn check_ssh_agent() -> AgentStatus {
     }
 }
 
+/// SFTP has no shell, so `~` isn't expanded server-side like it would be for
+/// a local/terminal path — resolve it ourselves via `realpath(".")`, which
+/// libssh2 resolves relative to the login's home directory.
+fn resolve_remote_path(sftp: &ssh2::Sftp, path: &str) -> Result<String, String> {
+    if path == "~" || path == "~/" {
+        let home = sftp.realpath(Path::new(".")).map_err(|e| e.to_string())?;
+        return Ok(home.to_string_lossy().to_string());
+    }
+    if let Some(rest) = path.strip_prefix("~/") {
+        let home = sftp.realpath(Path::new(".")).map_err(|e| e.to_string())?;
+        return Ok(home.join(rest).to_string_lossy().to_string());
+    }
+    Ok(path.to_string())
+}
+
 #[tauri::command]
 pub fn list_dir(alias: String, path: String) -> Result<Vec<RemoteEntry>, String> {
     let sess = connect(&alias)?;
     let sftp = sess.sftp().map_err(|e| e.to_string())?;
-    let entries = sftp.readdir(Path::new(&path)).map_err(|e| e.to_string())?;
+    let resolved = resolve_remote_path(&sftp, &path)?;
+    let entries = sftp.readdir(Path::new(&resolved)).map_err(|e| e.to_string())?;
     let mut out = vec![];
     for (p, stat) in entries {
         let name = p
@@ -147,8 +163,9 @@ pub fn list_dir(alias: String, path: String) -> Result<Vec<RemoteEntry>, String>
 pub fn download_file(alias: String, remote_path: String, local_path: String) -> Result<String, String> {
     let sess = connect(&alias)?;
     let sftp = sess.sftp().map_err(|e| e.to_string())?;
+    let resolved = resolve_remote_path(&sftp, &remote_path)?;
     let mut remote_file = sftp
-        .open(Path::new(&remote_path))
+        .open(Path::new(&resolved))
         .map_err(|e| format!("Failed to open remote file: {e}"))?;
     let mut buf = Vec::new();
     remote_file
