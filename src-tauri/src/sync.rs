@@ -36,6 +36,28 @@ pub fn sync_folder(
     delete: bool,
     copy_paths_to_clipboard: bool,
 ) -> Result<(), String> {
+    // rsync refuses to create a missing destination directory on its own
+    // ("change_dir ... failed: No such file or directory") — create it
+    // ourselves first, on whichever side is the destination.
+    if direction == "pull" {
+        std::fs::create_dir_all(&local_path)
+            .map_err(|e| format!("Failed to create local folder {local_path}: {e}"))?;
+    } else {
+        let status = Command::new("ssh")
+            .arg(&alias)
+            .arg("mkdir")
+            .arg("-p")
+            .arg(&remote_path)
+            .status();
+        match status {
+            Ok(s) if !s.success() => {
+                return Err(format!("Failed to create remote folder {remote_path} on {alias}"));
+            }
+            Err(e) => return Err(format!("Failed to reach {alias} to create {remote_path}: {e}")),
+            _ => {}
+        }
+    }
+
     let local_arg = if local_path.ends_with('/') {
         local_path.clone()
     } else {
