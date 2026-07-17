@@ -81,6 +81,7 @@ function App() {
   const [syncRemotePath, setSyncRemotePath] = useState("~");
   const [direction, setDirection] = useState<"push" | "pull">("pull");
   const [deleteExtra, setDeleteExtra] = useState(false);
+  const [copyPathsToClipboard, setCopyPathsToClipboard] = useState(true);
   const [syncLog, setSyncLog] = useState<string[]>([]);
   const [syncing, setSyncing] = useState(false);
 
@@ -185,6 +186,7 @@ function App() {
         remotePath: syncRemotePath,
         direction,
         delete: deleteExtra,
+        copyPathsToClipboard,
       });
     } catch (e) {
       handleFailure(e);
@@ -389,6 +391,16 @@ function App() {
               <label>
                 <input type="checkbox" checked={deleteExtra} onChange={(e) => setDeleteExtra(e.target.checked)} />
                 Delete files at destination not present in source
+              </label>
+            </div>
+            <div className="form-row checkbox-row">
+              <label>
+                <input
+                  type="checkbox"
+                  checked={copyPathsToClipboard}
+                  onChange={(e) => setCopyPathsToClipboard(e.target.checked)}
+                />
+                Copy changed file paths to clipboard after sync (handy for pasting into Claude Code)
               </label>
             </div>
             <button className="primary" disabled={syncing || !localPath} onClick={runSync}>
