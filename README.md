@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/logo.svg" width="96" height="96" alt="ssher logo" />
+  <img src="src-tauri/icons/128x128@2x.png" width="96" height="96" alt="ssher logo" />
 </p>
 
 <h1 align="center">ssher</h1>
