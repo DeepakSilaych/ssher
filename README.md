@@ -5,7 +5,7 @@
 <h1 align="center">ssher</h1>
 
 <p align="center">
-  Browse, sync and port-forward to the hosts already in your <code>~/.ssh/config</code>, from the macOS menu bar.
+  Always-on SSH port forwards to the hosts already in your <code>~/.ssh/config</code>, from the macOS menu bar.
 </p>
 
 <p align="center">
@@ -19,17 +19,18 @@
 
 ## Why
 
-You already keep your hosts, users, ports and keys in `~/.ssh/config`. Most GUI SSH clients want you to type all of that again into their own bookmark list and key store.
+A port forward you actually depend on should not be a terminal tab you have to remember. `ssh -N -L` dies on a dropped connection, a network change, or a laptop sleep, and nothing tells you: the command is just gone, and the port stops answering.
 
-ssher has no host list and no credential store of its own. It reads `~/.ssh/config`, authenticates through your running `ssh-agent` (or the host's `IdentityFile`), and for anything that needs OpenSSH semantics (`ProxyCommand`, `ProxyJump`, `known_hosts`) it shells out to the `ssh` and `rsync` binaries already on your machine.
+ssher keeps forwards up. Each one is supervised, reconnected with backoff when it drops, restored when the app restarts, and reported with a status that is measured rather than assumed.
+
+It also has no host list and no credential store of its own. It reads `~/.ssh/config`, and it shells out to the `ssh` binary already on your machine, so `ProxyCommand`, `ProxyJump`, agent forwarding and `known_hosts` all work the way they already do for you.
 
 It lives in the menu bar with no Dock icon. Closing the window hides it; forwards keep running.
 
 ## Demo
 
-<!-- TODO: screenshot of the Files tab browsing a remote host -->
-<!-- TODO: screenshot of the Sync tab with rsync log output -->
-<!-- TODO: screenshot of the Port Forward tab with an active -L forward -->
+<!-- TODO: screenshot of the ports table with a mix of active and retrying forwards -->
+<!-- TODO: screenshot of the New Port Forward dialog -->
 
 ## Quickstart
 
@@ -47,9 +48,9 @@ xattr -cr /Applications/ssher.app
 
 3. Launch it. The ssher icon appears in the menu bar. Click it and choose **Show ssher**.
 
-4. Verify: the sidebar lists the concrete `Host` aliases from `~/.ssh/config`. Pick one and the Files tab lists its home directory over SFTP.
+4. Verify: the sidebar lists the concrete `Host` aliases from `~/.ssh/config`. Click **+ New Forward**, pick a host and a port, and the ports table should show it go **Active**.
 
-If the sidebar shows **No SSH agent detected**, load a key first:
+If a forward sits on **Retrying**, hover the status for the last error. A common cause is no usable key:
 
 ```bash
 ssh-add ~/.ssh/id_ed25519
@@ -59,7 +60,7 @@ Intel builds are not published. Build from source instead (below).
 
 ### Build from source
 
-Needs a Rust toolchain, Node.js with npm, and the [Tauri 2 prerequisites](https://tauri.app/start/prerequisites/) for macOS. At runtime the app needs `ssh` and `rsync` on `PATH` (macOS ships both).
+Needs a Rust toolchain, Node.js with npm, and the [Tauri 2 prerequisites](https://tauri.app/start/prerequisites/) for macOS. At runtime the app needs `ssh` on `PATH` (macOS ships it).
 
 ```bash
 git clone https://github.com/DeepakSilaych/ssher.git
@@ -73,36 +74,48 @@ npm run tauri dev
 ## How it works
 
 ```
-                 ~/.ssh/config
-                       |
-                       | read on startup + after "Add New SSH Host"
-                       v
+   ~/.ssh/config                 forwards.json (app config dir)
+         |                                |
+         | host aliases                   | saved forwards, restored on launch
+         v                                v
    +-------------------------------------------------------+
    |  React UI  (src/App.tsx)                              |
-   |  sidebar: host list        tabs: Files | Sync | Fwd   |
+   |  sidebar: host list      main: ports table            |
    +-------------------------------------------------------+
-        | invoke()                        ^ listen("sync-log", "sync-done")
-        v                                 |
+        | invoke()                    ^ listen("forward-status")
+        v                             |
    +-------------------------------------------------------+
    |  Tauri commands  (src-tauri/src/lib.rs)               |
-   +-----------+------------------+------------------------+
-   | sftp.rs   | sync.rs          | forward.rs             |
-   | ssh2 crate| spawn rsync      | spawn ssh -N -L / -R   |
-   | in-process| -avz --itemize   | one child per forward  |
-   | libssh2   | over system ssh  | tracked in a HashMap   |
-   +-----------+------------------+------------------------+
-        |                |                     |
-        v                v                     v
-   ssh-agent, then   system ssh: honours ProxyCommand,
-   IdentityFile      ProxyJump, known_hosts, agent
+   +---------------------------+---------------------------+
+   | ssh_config.rs             | forward.rs                |
+   | parse config, add host    | one supervisor thread per |
+   |                           | forward, persisted to disk|
+   +---------------------------+---------------------------+
+                                           |
+                                           v
+                         ssh -N -L/-R  (one child per forward)
+                         system ssh: ProxyCommand, ProxyJump,
+                         known_hosts, agent
 ```
 
 1. `src-tauri/src/ssh_config.rs` parses `~/.ssh/config`. It collects every concrete (non-wildcard) `Host` alias, then for each alias merges the fields of every matching block, first match wins per directive, the same way OpenSSH does. Only `HostName`, `User`, `Port`, `IdentityFile` and `ProxyCommand` are read.
-2. The frontend is a single React component (`src/App.tsx`). It calls Rust through `invoke()` and receives sync output through two events, `sync-log` and `sync-done`.
-3. **Files** tab: `sftp.rs::connect` opens a TCP socket (8 s timeout), does the SSH handshake with the `ssh2` crate, tries every identity in the agent, then falls back to the host's `IdentityFile`. `list_dir` and `download_file` each open a fresh session. `~` is expanded through SFTP `realpath(".")` because SFTP has no shell.
-4. **Sync** tab: `sync.rs::sync_folder` first creates the destination folder (`create_dir_all` locally, `ssh <alias> mkdir -p` remotely), then runs `rsync -avz --itemize-changes --progress [--delete] src dst` with `<alias>:<path>` as the remote side. stdout and stderr are streamed to the UI line by line. Itemized lines for regular files are collected and, if the checkbox is on, their absolute local paths are put on the clipboard with `pbcopy`.
-5. **Port Forward** tab: `forward.rs::start_forward` spawns `ssh -N -L|-R <local>:<host>:<remote> <alias>`, stores the child under a UUID in `ForwardState`, and `stop_forward` kills it.
-6. `lib.rs` builds the tray icon with **Show ssher** / **Quit**, sets `ActivationPolicy::Accessory` on macOS (no Dock icon), and intercepts the window close event to hide instead of quit.
+2. The frontend is a single React component (`src/App.tsx`). It calls Rust through `invoke()` and receives live status through the `forward-status` event, so the table updates without polling.
+3. `forward.rs::start_forward` writes the forward to `forwards.json` and hands it to a supervisor thread. `stop_forward` kills the process and removes it from that file. `list_forwards` returns the current state for the initial render.
+4. Each supervisor thread owns exactly one forward: spawn `ssh -N -L|-R <local>:<host>:<remote> <alias>`, watch it, and on any failure kill it and respawn after a backoff that doubles from 1 s to a 30 s ceiling. The backoff resets only once the forward is confirmed healthy, so a forward that fails instantly on every attempt backs off instead of hot-looping.
+5. Health is probed, not assumed. For a local (`-L`) forward the supervisor TCP-connects to `127.0.0.1:<local_port>` every 3 s; the forward is reported **Active** only when that connect succeeds. A remote (`-R`) forward has no local listener, so only process liveness is checked.
+6. On launch `forward::restore_on_startup` reads `forwards.json` and starts a supervisor for every saved forward, so tunnels come back by themselves.
+7. `lib.rs` builds the tray icon with **Show ssher** / **Quit**, sets `ActivationPolicy::Accessory` on macOS (no Dock icon), and intercepts the window close event to hide instead of quit.
+
+### The ssh flags, and why
+
+`forward.rs` passes a specific set of options. Each one is there because of a failure it fixes, and two obvious-looking options are deliberately absent:
+
+| Flag | Why |
+|---|---|
+| `ControlMaster=no`, `ControlPath=none` | With a shared master connection active, `ssh -N -L` hands the forward to the master and exits `0` immediately. The supervisor would read that as a crash and reconnect forever while the tunnel was actually fine. Each forward gets its own connection. |
+| `ServerAliveInterval=10`, `ServerAliveCountMax=3` | Makes a dead peer surface as a process exit within ~30 s instead of hanging on a half-open socket. |
+| no `ExitOnForwardFailure` | It tears down the whole connection when *any* forward fails, including an unrelated static `RemoteForward` in the host's own `ssh_config` block that another session already holds. The TCP probe checks our forward specifically instead. |
+| no `ClearAllForwardings` | It looks like the fix for the line above, but it clears command-line `-L`/`-R` too, leaving a live connection with no forward at all — and with process-liveness status, that reads as healthy. |
 
 ## Features
 
@@ -110,45 +123,39 @@ npm run tauri dev
 |---|---|---|
 | Host list from `~/.ssh/config` | `ssh_config.rs::parse_ssh_config` | Wildcard patterns like `Host *` contribute defaults but are not listed |
 | Add New SSH Host | `ssh_config.rs::add_ssh_host` | Appends a `Host` block; rejects empty or duplicate alias |
-| Remote directory browsing (SFTP) | `sftp.rs::list_dir` | Directories first, then by name; path bar accepts `~` and `~/x` |
-| File download | `sftp.rs::download_file` | Save dialog via `tauri-plugin-dialog` |
-| Folder sync, push or pull | `sync.rs::sync_folder` | rsync over system ssh; optional `--delete` |
-| Changed-file paths to clipboard | `sync.rs::parse_itemized_file` | Parses both GNU rsync and macOS openrsync itemize codes |
-| Local (`-L`) and remote (`-R`) forwards | `forward.rs` | Start, stop, list; one `ssh -N` process each |
-| Agent check and fix hint | `sftp.rs::check_ssh_agent`, `App.tsx` | Warns when no agent; on `PERMISSION_DENIED` shows the exact `ssh-add <IdentityFile>` to run and a Retry button |
+| Local (`-L`) and remote (`-R`) forwards | `forward.rs::start_forward` | Any number, across any number of hosts, at once |
+| Automatic reconnect | `forward.rs::supervise` | Exponential backoff, 1 s doubling to a 30 s ceiling, indefinitely |
+| Survives app restart | `forward.rs::restore_on_startup` | Saved forwards are reconnected on launch |
+| Live status per forward | `forward-status` event, `App.tsx` | Connecting / Active / Retrying / Stopped, with last error and retry count |
+| Real health check | `forward.rs::supervise` | Active means a TCP connect to the local port succeeded, not just that a process exists |
+| Ports table | `App.tsx` | Every forward on every host in one view: port, host, forwarded address, status |
 | Menu bar app | `lib.rs` | Tray menu, no Dock icon, close hides the window |
 
 ## Configuration
 
-ssher has no config file of its own. Everything comes from `~/.ssh/config`, the environment, or constants in the source.
+Hosts come from `~/.ssh/config`. Forwards are the one thing ssher stores itself.
 
 | Source | Key | Default | Used for |
 |---|---|---|---|
 | `~/.ssh/config` | `Host` | | Alias list. Patterns with `*` or `?` are skipped as entries but still supply defaults |
-| `~/.ssh/config` | `HostName` | the alias | SFTP connect target |
-| `~/.ssh/config` | `User` | `$USER` | SFTP login user |
-| `~/.ssh/config` | `Port` | `22` | SFTP connect port |
-| `~/.ssh/config` | `IdentityFile` | `~/.ssh/id_ed25519` | Fallback key when the agent fails; shown in the `ssh-add` hint |
-| `~/.ssh/config` | `ProxyCommand` | | Files tab refuses the host with an explanatory error; Sync and Forward work because system `ssh` handles it |
-| env | `SSH_AUTH_SOCK` | | ssh-agent socket, used by libssh2 (Files) and by system `ssh` (Sync, Forward) |
-| env | `USER` | | Fallback SSH user when `User` is not set |
+| `~/.ssh/config` | `HostName`, `User`, `Port`, `IdentityFile`, `ProxyCommand` | | Shown in the sidebar; applied by system `ssh` when a forward connects |
+| `forwards.json` | | `[]` | Saved forwards, restored on launch. macOS: `~/Library/Application Support/ssher/forwards.json` |
+| env | `SSH_AUTH_SOCK` | | ssh-agent socket, used by system `ssh` |
 | env | `TAURI_DEV_HOST` | unset | Dev only: bind Vite to a LAN host for on-device testing (`vite.config.ts`) |
-| `sftp.rs` | `CONNECT_TIMEOUT` | 8 s | TCP connect timeout |
-| `sftp.rs` | `SESSION_TIMEOUT_MS` | 10000 | libssh2 session timeout |
+| `forward.rs` | `MAX_BACKOFF_SECS` | 30 | Reconnect backoff ceiling |
 | `tauri.conf.json` | `app.windows[0]` | 800 x 600 | Main window size |
-| `App.tsx` | UI defaults | remote path `~`, direction pull, forward `8080:127.0.0.1:8080`, clipboard copy on | Initial form values |
+| `App.tsx` | UI defaults | forward `8080:127.0.0.1:8080`, direction local | Initial dialog values |
 
-Only one thing is ever written to disk: `add_ssh_host` appends to `~/.ssh/config`. No keys, passwords or session data are stored.
+Two things are written to disk: `forwards.json`, and the `Host` block that `add_ssh_host` appends to `~/.ssh/config`. No keys, passwords or session data are stored.
 
 ## Design decisions and trade-offs
 
-- **Two transports on purpose.** SFTP runs in-process through the `ssh2` crate (libssh2) so directory listing needs no shell and no subprocess. Sync and forwarding spawn the system `ssh` and `rsync` instead of re-implementing OpenSSH, so `ProxyCommand`, `ProxyJump`, agent forwarding and `known_hosts` all work for free. The cost: the Files tab refuses `ProxyCommand` hosts (`sftp.rs::connect`) and does not know about `ProxyJump` at all, because the parser does not read it.
-- **No stored credentials.** Auth is agent first, then `IdentityFile` with no passphrase (`userauth_pubkey_file(..., None)`). A passphrase-protected key only works if it is loaded in the agent, which is why the app surfaces the `ssh-add` command instead of asking for a passphrase.
-- **No host-key verification on the libssh2 path.** `sftp.rs::connect` handshakes without consulting `~/.ssh/known_hosts`. The Sync and Forward paths get host-key checking from system `ssh`. Treat the Files tab as trusting the network.
-- **One session per command.** `list_dir` and `download_file` each do a full connect and auth. Simple and stateless, but every directory click pays a handshake.
+- **One `ssh` child per forward, not a library.** Spawning system `ssh` rather than re-implementing OpenSSH means `ProxyCommand`, `ProxyJump`, agent forwarding and `known_hosts` work for free, and the host's own config is honoured exactly. The cost is a process per forward and parsing behaviour out of exit codes.
+- **Status is measured.** A supervised process being alive turned out to be a poor proxy for a working tunnel: ssh will happily hold a connection open with no listener bound. Reporting **Active** only on a successful TCP connect to the local port is the difference between a status light and a status guess. It does mean a `-R` forward, which has no local listener, gets the weaker liveness-only check.
+- **Backoff resets on health, not on spawn.** Resetting the delay whenever a process starts successfully lets a forward that dies immediately retry roughly once a second forever. The reset is tied to the forward being confirmed healthy instead.
+- **Stop means delete.** Stopping a forward removes it from `forwards.json` rather than parking it in a disabled state, so a stopped forward stays stopped across restarts. There is no way to keep a forward in the list but switch it off.
+- **Its own connection per forward, deliberately.** Opting out of `ControlMaster` costs a real handshake per forward and gives up connection sharing, in exchange for a process whose lifetime actually tracks the tunnel.
 - **ssh_config merge semantics are replicated, not approximated.** A host whose settings are split across a shared block and a specific block shows up once with merged fields (`ssh_config.rs`, tested in `merges_fields_across_matching_blocks`). Only five directives are read; `Include` is not followed.
-- **rsync itemize parsing splits on the first space.** GNU rsync pads the change code to 11 chars; macOS `openrsync` emits a shorter one. Both are handled (`sync.rs::parse_itemized_file`, with tests for each).
-- **Static OpenSSL.** `ssh2` is built with `vendored-openssl`, so the `.dmg` does not depend on a Homebrew OpenSSL. First build is slower.
 
 ## Project layout
 
@@ -159,20 +166,18 @@ ssher/
   vite.config.ts          port 1420, strictPort, ignores src-tauri
   src/
     main.tsx              React root
-    App.tsx               whole UI: sidebar, three tabs, two modals
+    App.tsx               whole UI: sidebar, ports table, two modals
     App.css
   src-tauri/
-    Cargo.toml            tauri 2 (tray-icon), ssh2 0.9, dirs, uuid, shellexpand
+    Cargo.toml            tauri 2 (tray-icon), dirs, uuid, serde
     tauri.conf.json       product name, window, bundle targets, icons
-    capabilities/default.json   window show/hide/focus, dialog, opener, process exit
+    capabilities/default.json   window show/hide/focus, opener, process exit
     icons/                app icons used by the bundle and the tray
     src/
       main.rs             calls ssher_lib::run()
       lib.rs              Tauri builder, command registry, tray, close-to-hide
       ssh_config.rs       ~/.ssh/config parser + add_ssh_host
-      sftp.rs             connect, auth, list_dir, download_file, check_ssh_agent
-      sync.rs             rsync runner, itemize parser, pbcopy
-      forward.rs          ssh -N forward processes
+      forward.rs          supervisor threads, health probe, persistence
 ```
 
 ## Development
@@ -184,7 +189,7 @@ npm install
 npm run tauri dev
 ```
 
-Rust unit tests (config merge, wildcard skipping, rsync itemize parsing):
+Rust unit tests (config merge, wildcard skipping):
 
 ```bash
 cd src-tauri && cargo test
@@ -210,18 +215,19 @@ There is no CI workflow and no release automation in the repo. Releases are buil
 
 All of these are visible in the code today.
 
-- Files tab is download only. No upload, rename, delete or mkdir over SFTP.
-- `download_file` reads the whole remote file into memory before writing it, so very large files are limited by RAM.
-- No `known_hosts` check in the Files tab (see trade-offs).
-- `ProxyCommand` hosts are rejected in the Files tab; `ProxyJump` and `Include` directives are not parsed.
-- Forwards live only in memory. Quitting the app calls `app.exit(0)` without killing the `ssh -N` children, so stop forwards from the Port Forward tab before quitting.
-- Clipboard copy uses `pbcopy`, so it is macOS only. `ActivationPolicy::Accessory` is also macOS only. Other platforms are not targeted even though `bundle.targets` is `"all"`.
+- Port forwarding is the whole app. Earlier versions had an SFTP file browser and an rsync folder sync; both were removed.
+- Remote (`-R`) forwards get liveness-only status. The TCP probe checks a local listener, which a `-R` forward does not have, so a `-R` forward can read **Active** while the remote listener is gone.
+- The probe confirms the tunnel's local end. If nothing is listening on the target port on the remote host, the forward is still **Active** — connections through it will just fail.
+- Quitting does not clean up. `app.exit(0)` does not kill the `ssh -N` children, so they can outlive the app and keep holding their local ports. Stop forwards before quitting, or kill the strays.
+- No pause. Stopping a forward deletes it; there is no disabled-but-remembered state.
+- `ProxyJump` and `Include` are not parsed by the config reader, so such hosts may not appear in the sidebar even though system `ssh` would handle them.
+- `ActivationPolicy::Accessory` is macOS only. Other platforms are not targeted even though `bundle.targets` is `"all"`.
 - The app is unsigned. Apple Silicon `.dmg` only in Releases.
 - `Cargo.toml` still carries the Tauri template `description = "A Tauri App"` and `authors = ["you"]`.
 
 ## Contributing
 
-Open an issue or a PR on [GitHub](https://github.com/DeepakSilaych/ssher). Keep Rust changes covered by a unit test where the logic is parseable (see `ssh_config.rs` and `sync.rs` for the pattern).
+Open an issue or a PR on [GitHub](https://github.com/DeepakSilaych/ssher). Keep Rust changes covered by a unit test where the logic is parseable (see `ssh_config.rs` for the pattern).
 
 ## License
 

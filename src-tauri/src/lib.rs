@@ -1,7 +1,5 @@
 mod forward;
-mod sftp;
 mod ssh_config;
-mod sync;
 
 use forward::ForwardState;
 use tauri::menu::{Menu, MenuItem};
@@ -18,15 +16,10 @@ pub fn run() {
     tauri::Builder::default()
         .manage(ForwardState::default())
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_process::init())
         .invoke_handler(tauri::generate_handler![
             list_ssh_hosts,
             ssh_config::add_ssh_host,
-            sftp::list_dir,
-            sftp::download_file,
-            sftp::check_ssh_agent,
-            sync::sync_folder,
             forward::start_forward,
             forward::stop_forward,
             forward::list_forwards,
@@ -34,6 +27,9 @@ pub fn run() {
         .setup(|app| {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+
+            let state = app.state::<ForwardState>();
+            forward::restore_on_startup(&app.handle(), &state);
 
             let show = MenuItem::with_id(app, "show", "Show ssher", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
